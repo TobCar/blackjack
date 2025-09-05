@@ -1,0 +1,1 @@
+This project creates a GPU-accelerated blackjack simulation system that generates mathematically optimal strategy. The system produces superior recommendations compared to traditional counting systems like Hi-Lo.

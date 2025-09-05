@@ -11,7 +11,7 @@ from collections import Counter
 
 from game_mechanics import HandState
 from ev_engine import BlackjackEVEngine
-from game_mechanics.rules import BlackjackRuleset
+from game_mechanics.rules import BlackjackRuleset, RULES
 
 # ---------- Helpers ----------
 
@@ -59,7 +59,7 @@ class Scenario:
     num_decks: int = 1
     # Action eligibility flags for the current node
     can_double: bool = True
-    cashout_allowed: bool = True
+    can_cashout: bool = True
     can_split: bool = True
     # Optional rules
     rules: BlackjackRuleset | None = None
@@ -87,7 +87,7 @@ def run_scenarios(scenarios: List[Scenario]) -> List[Dict[str, Any]]:
             rules.das,
             rules.max_splits,
             rules.must_stand_after_split_aces,
-            rules.cashout_allowed,
+            rules.can_cashout,
             rules.blackjack_payout,
             rules.insurance_allowed,
         )
@@ -116,7 +116,7 @@ def run_scenarios(scenarios: List[Scenario]) -> List[Dict[str, Any]]:
             dealer_up=sc.dealer_up if sc.dealer_up in RANKS else "10",
             remaining_counts=remaining,
             can_double=sc.can_double,
-            cashout_allowed=sc.cashout_allowed,
+            can_cashout=sc.can_cashout,
             can_split=sc.can_split,
         )
 
@@ -126,7 +126,7 @@ def run_scenarios(scenarios: List[Scenario]) -> List[Dict[str, Any]]:
                 "dealer_up": sc.dealer_up,
                 "num_decks": sc.num_decks,
                 "can_double": sc.can_double,
-                "cashout_allowed": sc.cashout_allowed,
+                "can_cashout": sc.can_cashout,
                 "can_split": sc.can_split,
                 "rules": rules,
                 "ev": ev,
@@ -146,38 +146,49 @@ if __name__ == "__main__":
             dealer_up="9",
             num_decks=6,
             can_double=True,
-            cashout_allowed=True,
+            can_cashout=True,
             can_split=True,
-            rules=BlackjackRuleset(s17=True, das=True, cashout_allowed=True),
+            rules=RULES,
         ),
         # Soft 18 vs 9
         Scenario(
             player_cards=["A", "7"],
             dealer_up="9",
             num_decks=6,
-            rules=BlackjackRuleset(s17=True, das=True),
+            rules=RULES,
         ),
         # Hard 16 vs 10, surrender allowed
         Scenario(
             player_cards=["10", "6"],
             dealer_up="10",
             num_decks=6,
-            cashout_allowed=True,
-            rules=BlackjackRuleset(s17=True, das=True, cashout_allowed=True),
+            can_cashout=True,
+            rules=RULES,
         ),
         # Blackjack vs dealer Ace (insurance allowed) — tests push on dealer BJ
         Scenario(
             player_cards=["A", "10"],
             dealer_up="A",
             num_decks=6,
-            rules=BlackjackRuleset(s17=True, insurance_allowed=True),
+            rules=RULES,
+        ),
+        # Even money test: player blackjack vs dealer Ace with insurance
+        # Should show insurance EV = 1.0 (even money guarantee)
+        Scenario(
+            player_cards=["A", "10"],
+            dealer_up="A",
+            num_decks=1,
+            can_double=False,  # Not applicable for blackjack
+            can_split=False,  # Not applicable for blackjack
+            can_cashout=False,  # Focus on insurance vs stand
+            rules=RULES,
         ),
         # Double test: hard 11 vs 6
         Scenario(
             player_cards=["6", "5"],
             dealer_up="6",
             num_decks=6,
-            rules=BlackjackRuleset(s17=True, das=True),
+            rules=RULES,
         ),
     ]
 

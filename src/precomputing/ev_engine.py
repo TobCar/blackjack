@@ -22,8 +22,7 @@ from game_mechanics.rules import (
     RULES,
     RANKS,
     TEN_BUCKET,
-    CASHOUT_EV as SURRENDER_EV,
-    BLACKJACK_PAYOUT,
+    CASHOUT_EV,
 )
 
 
@@ -38,7 +37,6 @@ class PlayerKey:
     split_level: int
     # Flags that affect action set legality for THIS node
     can_double: bool
-    can_surrender: bool
     can_split: bool
 
     @staticmethod
@@ -46,7 +44,6 @@ class PlayerKey:
         hand: HandState,
         split_level: int,
         can_double: bool,
-        can_surrender: bool,
         can_split: bool,
     ) -> "PlayerKey":
         is_pair = getattr(hand, "can_split", False)
@@ -63,7 +60,6 @@ class PlayerKey:
             num_cards=hand.card_count,
             split_level=split_level,
             can_double=can_double,
-            can_surrender=can_surrender,
             can_split=can_split,
         )
 
@@ -126,7 +122,7 @@ class BlackjackEVEngine:
         remaining_counts: Counter[str],
         *,
         can_double: bool = True,
-        cashout_allowed: bool = True,
+        can_cashout: bool = True,
         can_split: bool = True,
         split_level: int = 0,
     ) -> Tuple[float, ActionType]:
@@ -135,9 +131,9 @@ class BlackjackEVEngine:
         """
         self._load_deck(remaining_counts)
         player_key = PlayerKey.from_hand(
-            hand, split_level, can_double, cashout_allowed, can_split
+            hand, split_level, can_double, can_split
         )
-        key = (player_key, dealer_up, self._rules_mask(), self.deck_key)
+        key = (player_key, dealer_up, self.rules.name, self.deck_key)
 
         if key in self.ev_cache:
             m1, _m2, action = self.ev_cache[key]
@@ -156,7 +152,7 @@ class BlackjackEVEngine:
         remaining_counts: Counter[str],
         *,
         can_double: bool = True,
-        cashout_allowed: bool = True,
+        can_cashout: bool = True,
         can_split: bool = True,
         split_level: int = 0,
         assume_split_independence: bool = True,
@@ -167,10 +163,8 @@ class BlackjackEVEngine:
         use E[(X1+X2)^2] = E[X1^2] + E[X2^2] + 2 E[X1]E[X2].
         """
         self._load_deck(remaining_counts)
-        pk = PlayerKey.from_hand(
-            hand, split_level, can_double, cashout_allowed, can_split
-        )
-        key = (pk, dealer_up, self._rules_mask(), self.deck_key)
+        pk = PlayerKey.from_hand(hand, split_level, can_double, can_split)
+        key = (pk, dealer_up, self.rules.name, self.deck_key)
         if key in self.ev_cache:
             m1, m2, act = self.ev_cache[key]
             var = max(0.0, m2 - m1 * m1)
@@ -205,24 +199,36 @@ class BlackjackEVEngine:
         # Stand
         evs[ActionType.STAND] = self._ev_stand(hand, dealer_up)
 
-        # Surrender Any Time (can be used at any point)
-        if self.rules.cashout_allowed:
-            evs[ActionType.SURRENDER_ANY_TIME] = SURRENDER_EV
+        # Cashout rule for online casinos
+        if self.rules.can_cashout:
+            evs[ActionType.CASHOUT] = CASHOUT_EV
 
-        # Insurance (consider only if dealer shows Ace and rule allows; returns net EV including side bet)
-        if self.rules.insurance_allowed and dealer_up == "A" and pk.num_cards == 2:
+        # Insurance (consider only if rule allows offering insurance on this upcard)
+        if (
+            self.rules.insurance_allowed
+            and self.rules.offer_insurance(dealer_up)
+            and pk.num_cards == 2
+        ):
             evs[ActionType.INSURANCE] = self._ev_insurance(hand, dealer_up)
+
+        # For actions that create additional bets, check if they should be restricted
+        # due to dealer blackjack timing rules
+        additional_bet_multiplier = self._get_additional_bet_multiplier(
+            hand, dealer_up, pk
+        )
 
         # Double (allowed only on first decision, or if your rules differ then relax this)
         if pk.can_double and pk.num_cards == 2:
-            evs[ActionType.DOUBLE] = self._ev_double(hand, dealer_up, pk)
+            base_ev = self._ev_double(hand, dealer_up, pk)
+            evs[ActionType.DOUBLE] = base_ev * additional_bet_multiplier
 
-        # Hit
+        # Hit (doesn't create additional bets, so no adjustment needed)
         evs[ActionType.HIT] = self._ev_hit(hand, dealer_up, pk)
 
-        # Split
+        # Split (creates additional bets)
         if pk.can_split and pk.is_pair and pk.num_cards == 2:
-            evs[ActionType.SPLIT] = self._ev_split(hand, dealer_up, pk)
+            base_ev = self._ev_split(hand, dealer_up, pk)
+            evs[ActionType.SPLIT] = base_ev * additional_bet_multiplier
 
         # Pick best
         best_action = max(evs, key=lambda a: evs[a])
@@ -233,36 +239,20 @@ class BlackjackEVEngine:
     def _ev_stand(self, hand: HandState, dealer_up: str) -> float:
         if hand.is_busted:
             return -1.0
-        # Blackjack payout
-        if hand.is_blackjack and self.rules.blackjack_payout == 1.5:
-            # If dealer can also have BJ (Ace or Ten upcard), use dealer dist to capture pushes
-            if dealer_up in ("A", TEN_BUCKET):
-                dist = self._dealer_dist(dealer_up)
-                ev = 0.0
-                for total, p in dist.items():
-                    if total == 21:  # dealer blackjack → push
-                        ev += p * 0.0
-                    elif total > 21:
-                        ev += p * BLACKJACK_PAYOUT
-                    else:
-                        ev += p * BLACKJACK_PAYOUT
-                return ev
-            else:
-                return BLACKJACK_PAYOUT
+        # Handle player blackjack with proper peek and settlement rules
+        if hand.is_blackjack:
+            return self._ev_player_blackjack(hand, dealer_up)
 
-        # General settlement vs dealer distribution
-        player = hand.total
+        # General settlement vs dealer distribution using calculate_payout
         dist = self._dealer_dist(dealer_up)
         ev = 0.0
-        for total, p in dist.items():
-            if total > 21:
-                ev += p * 1.0
-            elif player > total:
-                ev += p * 1.0
-            elif player == total:
-                ev += p * 0.0
-            else:
-                ev += p * (-1.0)
+        for dealer_total, p in dist.items():
+            payout = self.rules.calculate_non_player_blackjack_payout(
+                player_total=hand.total,
+                dealer_total=dealer_total,
+                bet_multiplier=1.0,
+            )
+            ev += p * payout
         return ev
 
     def _ev_hit(self, hand: HandState, dealer_up: str, pk: PlayerKey) -> float:
@@ -286,10 +276,9 @@ class BlackjackEVEngine:
                 next_hand,
                 pk.split_level,
                 can_double=False,
-                can_surrender=False,
                 can_split=False,
             )
-            key = (child_pk, dealer_up, self._rules_mask(), self.deck_key)
+            key = (child_pk, dealer_up, self.rules.name, self.deck_key)
             if key in self.ev_cache:
                 child_ev, _ = self.ev_cache[key]
             else:
@@ -355,15 +344,21 @@ class BlackjackEVEngine:
             self._draw(i1)
             self._draw(i2)
 
+            # Check if we're splitting aces and must stand after split aces
+            splitting_aces = pk.pair_rank == "A"
+            must_stand_after_aces = (
+                splitting_aces and self.rules.must_stand_after_split_aces
+            )
+
             # Hand 1 EV
             pk1 = PlayerKey.from_hand(
                 h1,
                 pk.split_level + 1,
-                can_double=self.rules.das,
-                can_surrender=False,
+                can_double=self.rules.das and not must_stand_after_aces,
                 can_split=(
                     False
                     if self.rules.max_splits >= (pk.split_level + 1)
+                    or must_stand_after_aces
                     else h1.can_split
                 ),
             )
@@ -373,11 +368,11 @@ class BlackjackEVEngine:
             pk2 = PlayerKey.from_hand(
                 h2,
                 pk.split_level + 1,
-                can_double=self.rules.das,
-                can_surrender=False,
+                can_double=self.rules.das and not must_stand_after_aces,
                 can_split=(
                     False
                     if self.rules.max_splits >= (pk.split_level + 1)
+                    or must_stand_after_aces
                     else h2.can_split
                 ),
             )
@@ -395,6 +390,11 @@ class BlackjackEVEngine:
         if dealer_up != "A":
             return self._ev_stand(hand, dealer_up)
 
+        # Even money simplification: if player has blackjack and takes insurance,
+        # it's guaranteed 1:1 payout regardless of dealer outcome
+        if hand.is_blackjack:
+            return 1.0  # Even money guarantee
+
         ten_idx = self._rank_index(TEN_BUCKET)
         if self.N == 0:
             return -0.5  # lose the side bet, nothing else changes
@@ -404,24 +404,74 @@ class BlackjackEVEngine:
 
         # If dealer has blackjack:
         # - Insurance pays 2:1 on 0.5 → +1 net on the side
-        # - Main hand: loses -1 unless player also has BJ → push
-        if hand.is_blackjack:
-            v_bj = +1.0  # insurance +1, main pushes 0
-        else:
-            v_bj = 0.0  # insurance +1 and main -1 → net 0
+        # - Main hand: loses -1 (player doesn't have BJ in this branch)
+        v_bj = 0.0  # insurance +1 and main -1 → net 0
 
         # If dealer does NOT have blackjack:
-        # - Lose the 0.5 side bet, continue normal game knowing hole-card ≠ Ten.
-        #   That “knowledge” is equivalent to conditioning on hole ≠ Ten, which
-        #   in practice means we should *not* remove any card from the deck here.
-        #   We simply evaluate stand/hit/etc. as normal; the side bet is sunk.
+        # - Lose the 0.5 side bet, continue normal game
         v_no = -0.5 + self._ev_stand(hand, dealer_up)
         return p_bj * v_bj + p_no * v_no
+
+    def _ev_player_blackjack(self, dealer_up: str) -> float:
+        """Handle player blackjack with proper peek and settlement rules."""
+        # Check if dealer could have blackjack (Ace or Ten upcard)
+        if dealer_up not in ("A", TEN_BUCKET):
+            return self.rules.blackjack_payout
+
+        # Calculate probability of dealer natural blackjack (only with Ace or Ten up)
+        if dealer_up == "A":
+            ten_idx = self._rank_index(TEN_BUCKET)
+            p_dealer_bj = self.deck[ten_idx] / self.N if self.N > 0 else 0.0
+        else:  # dealer_up == TEN_BUCKET
+            ace_idx = self._rank_index("A")
+            p_dealer_bj = self.deck[ace_idx] / self.N if self.N > 0 else 0.0
+
+        # Player BJ vs Dealer BJ = push (0.0)
+        # Player BJ vs Dealer no-BJ = player wins 1.5x
+        return p_dealer_bj * 0.0 + (1.0 - p_dealer_bj) * self.rules.blackjack_payout
+
+    def _get_additional_bet_multiplier(
+        self, hand: HandState, dealer_up: str, pk: PlayerKey
+    ) -> float:
+        """
+        Calculate multiplier for actions that create additional bets based on dealer blackjack timing.
+
+        Returns:
+        - 1.0: Normal evaluation (no dealer BJ concerns or lose_additional_bets=True)
+        - 0.0: Action should be avoided (dealer BJ likely and lose_additional_bets=False)
+        - (0,1): Probability-weighted based on dealer BJ likelihood
+        """
+        # Only relevant when dealer could have blackjack
+        if dealer_up not in ("A", TEN_BUCKET):
+            return 1.0
+
+        # Check if dealer should peek
+        insurance_offered = self.rules.offer_insurance(dealer_up)
+        insurance_taken = False  # For EV calculation, assume not taken
+        should_peek = self.rules.should_dealer_peek(dealer_up)
+
+        if not should_peek:
+            return 1.0  # No peek means normal evaluation
+
+        # Calculate dealer blackjack probability
+        if self.N == 0:
+            return 1.0  # Can't determine without cards
+
+        if dealer_up == "A":
+            ten_idx = self._rank_index(TEN_BUCKET)
+            p_dealer_bj = self.deck[ten_idx] / self.N if self.N > 0 else 0.0
+        else:  # dealer_up == TEN_BUCKET
+            ace_idx = self._rank_index("A")
+            p_dealer_bj = self.deck[ace_idx] / self.N if self.N > 0 else 0.0
+
+        # Simplified: when dealer peeks and finds blackjack, additional bets are lost
+        # Return probability that dealer DOESN'T have blackjack (so additional bets are worthwhile)
+        return 1.0 - p_dealer_bj
 
     # ------------ Dealer distribution (exact, memoized) ------------
 
     def _dealer_dist(self, dealer_up: str) -> Dict[int, float]:
-        k = (dealer_up, self._rules_mask(), self.deck_key)
+        k = (dealer_up, self.rules.name, self.deck_key)
         if k in self.dealer_cache:
             return self.dealer_cache[k]
 
@@ -537,20 +587,6 @@ class BlackjackEVEngine:
                 return RANKS.index(TEN_BUCKET)
             raise
 
-    def _rules_mask(self) -> int:
-        # Pack a mask so rule settings can be memoized too
-        # bit0: s17, bit1: das, bit2: can_hit_after_split_aces, bit3: surrender_any_time, bit4: bj_3to2, bit5: insurance, bits 6-12: max_splits (up to 127)
-        r = self.rules
-        return (
-            (1 if r.s17 else 0)
-            | ((1 if r.das else 0) << 1)
-            | ((1 if r.must_stand_after_split_aces else 0) << 2)
-            | ((1 if r.cashout_allowed else 0) << 3)
-            | ((1 if r.blackjack_payout == 1.5 else 0) << 4)
-            | ((1 if r.insurance_allowed else 0) << 5)
-            | ((int(r.max_splits) & 0x7F) << 6)
-        )
-
     def _compute_moments(
         self,
         hand: HandState,
@@ -574,29 +610,46 @@ class BlackjackEVEngine:
         # Stand
         cand[ActionType.STAND] = self._stand_moments(hand, dealer_up)
 
-        # Surrender any time
-        if self.rules.cashout_allowed:
-            # Constant payoff SURRENDER_EV
-            m1 = SURRENDER_EV
-            m2 = SURRENDER_EV * SURRENDER_EV
-            cand[ActionType.SURRENDER_ANY_TIME] = (m1, m2)
+        # Cashout rule in online casinos
+        if self.rules.can_cashout:
+            # Constant payoff CASHOUT_EV
+            m1 = CASHOUT_EV
+            m2 = CASHOUT_EV * CASHOUT_EV
+            cand[ActionType.CASHOUT] = (m1, m2)
 
         # Insurance
-        if self.rules.insurance_allowed and dealer_up == "A" and pk.num_cards == 2:
+        if (
+            self.rules.insurance_allowed
+            and self.rules.offer_insurance(dealer_up)
+            and pk.num_cards == 2
+        ):
             m1, m2 = self._insurance_moments(hand, dealer_up)
             cand[ActionType.INSURANCE] = (m1, m2)
 
+        # For actions that create additional bets, apply timing multiplier
+        additional_bet_multiplier = self._get_additional_bet_multiplier(
+            hand, dealer_up, pk
+        )
+
         # Double
         if pk.can_double and pk.num_cards == 2:
-            cand[ActionType.DOUBLE] = self._double_moments(hand, dealer_up, pk)
+            base_m1, base_m2 = self._double_moments(hand, dealer_up, pk)
+            cand[ActionType.DOUBLE] = (
+                base_m1 * additional_bet_multiplier,
+                base_m2 * (additional_bet_multiplier**2),
+            )
 
-        # Hit
+        # Hit (doesn't create additional bets)
         cand[ActionType.HIT] = self._hit_moments(hand, dealer_up, pk)
 
         # Split
         if pk.can_split and pk.is_pair and pk.num_cards == 2:
-            cand[ActionType.SPLIT] = self._split_moments(
+            base_m1, base_m2 = self._split_moments(
                 hand, dealer_up, pk, assume_split_independence
+            )
+            cand[ActionType.SPLIT] = (
+                base_m1 * additional_bet_multiplier,
+                base_m2 * (additional_bet_multiplier**2),
             )
 
         # Choose best by maximizing expected value (first moment)
@@ -608,41 +661,46 @@ class BlackjackEVEngine:
         # Return (E[X], E[X^2]) when standing
         if hand.is_busted:
             return -1.0, 1.0
-        # Blackjack payout
-        if hand.is_blackjack and self.rules.blackjack_payout == 1.5:
-            if dealer_up in ("A", TEN_BUCKET):
-                dist = self._dealer_dist(dealer_up)
-                m1 = 0.0
-                m2 = 0.0
-                for total, p in dist.items():
-                    if total == 21:
-                        payoff = 0.0
-                    elif total > 21:
-                        payoff = BLACKJACK_PAYOUT
-                    else:
-                        payoff = BLACKJACK_PAYOUT
-                    m1 += p * payoff
-                    m2 += p * (payoff * payoff)
-                return m1, m2
-            else:
-                payoff = BLACKJACK_PAYOUT
-                return payoff, payoff * payoff
+        # Handle player blackjack with proper peek and settlement rules
+        if hand.is_blackjack:
+            return self._stand_moments_player_blackjack(hand, dealer_up)
 
-        player = hand.total
+        # Use calculate_payout for consistency
         dist = self._dealer_dist(dealer_up)
         m1 = 0.0
         m2 = 0.0
-        for total, p in dist.items():
-            if total > 21:
-                payoff = 1.0
-            elif player > total:
-                payoff = 1.0
-            elif player == total:
-                payoff = 0.0
-            else:
-                payoff = -1.0
+        for dealer_total, p in dist.items():
+            payoff = self.rules.calculate_non_player_blackjack_payout(
+                player_total=hand.total,
+                dealer_total=dealer_total,
+                bet_multiplier=1.0,
+            )
             m1 += p * payoff
             m2 += p * (payoff * payoff)
+        return m1, m2
+
+    def _stand_moments_player_blackjack(
+        self, hand: HandState, dealer_up: str
+    ) -> Tuple[float, float]:
+        """Handle player blackjack moments with proper peek and settlement rules."""
+        # Check if dealer could have blackjack (Ace or Ten upcard)
+        if dealer_up not in ("A", TEN_BUCKET):
+            payoff = self.rules.blackjack_payout
+            return payoff, payoff * payoff
+
+        # Calculate probability of dealer blackjack
+        if dealer_up == "A":
+            ten_idx = self._rank_index(TEN_BUCKET)
+            dealer_blackjack_prob = self.deck[ten_idx] / (self.N - 1)
+        else:  # dealer_up == TEN_BUCKET
+            ace_idx = self._rank_index("A")
+            dealer_blackjack_prob = self.deck[ace_idx] / (self.N - 1)
+
+        # If dealer has blackjack: push (payoff = 0)
+        # If dealer doesn't have blackjack: player wins blackjack payout
+        m1 = (1 - dealer_blackjack_prob) * self.rules.blackjack_payout
+        m2 = (1 - dealer_blackjack_prob) * (self.rules.blackjack_payout**2)
+
         return m1, m2
 
     def _hit_moments(
@@ -662,9 +720,9 @@ class BlackjackEVEngine:
             p = cnt / total_cards
             self._draw(idx)
             child_pk = PlayerKey.from_hand(
-                next_hand, pk.split_level, False, False, False
+                next_hand, pk.split_level, False, False
             )
-            key = (child_pk, dealer_up, self._rules_mask(), self.deck_key)
+            key = (child_pk, dealer_up, self.rules.name, self.deck_key)
             if key in self.ev_cache:
                 cm1, cm2, _ = self.ev_cache[key]
             else:
@@ -731,15 +789,22 @@ class BlackjackEVEngine:
 
             self._draw(i1)
             self._draw(i2)
+
+            # Check if we're splitting aces and must stand after split aces
+            splitting_aces = pk.pair_rank == "A"
+            must_stand_after_aces = (
+                splitting_aces and self.rules.must_stand_after_split_aces
+            )
+
             # Hand 1
             pk1 = PlayerKey.from_hand(
                 h1,
                 pk.split_level + 1,
-                self.rules.das,
-                False,
+                self.rules.das and not must_stand_after_aces,
                 (
                     False
                     if self.rules.max_splits >= (pk.split_level + 1)
+                    or must_stand_after_aces
                     else h1.can_split
                 ),
             )
@@ -750,11 +815,11 @@ class BlackjackEVEngine:
             pk2 = PlayerKey.from_hand(
                 h2,
                 pk.split_level + 1,
-                self.rules.das,
-                False,
+                self.rules.das and not must_stand_after_aces,
                 (
                     False
                     if self.rules.max_splits >= (pk.split_level + 1)
+                    or must_stand_after_aces
                     else h2.can_split
                 ),
             )
@@ -784,12 +849,18 @@ class BlackjackEVEngine:
     ) -> Tuple[float, float]:
         if dealer_up != "A":
             return self._stand_moments(hand, dealer_up)
+
+        # Even money simplification: if player has blackjack and takes insurance,
+        # it's guaranteed 1:1 payout regardless of dealer outcome
+        if hand.is_blackjack:
+            return 1.0, 1.0  # Guaranteed payoff of 1.0
+
         ten_idx = self._rank_index(TEN_BUCKET)
         if self.N == 0:
             return -0.5, 0.25
         p_bj = self.deck[ten_idx] / self.N
         p_no = 1.0 - p_bj
-        v_bj = 1.0 if hand.is_blackjack else 0.0
+        v_bj = 0.0  # insurance +1 and main -1 → net 0 (player doesn't have BJ in this branch)
         v_no = -0.5 + self._stand_moments(hand, dealer_up)[0]
         m1 = p_bj * v_bj + p_no * v_no
         m2 = p_bj * (v_bj * v_bj) + p_no * (v_no * v_no)

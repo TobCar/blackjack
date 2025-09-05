@@ -6,5 +6,5 @@ class ActionType(Enum):
     STAND = "stand"
     DOUBLE = "double"
     SPLIT = "split"
-    SURRENDER_ANY_TIME = "surrender_any_time"
+    CASHOUT = "cashout"
     INSURANCE = "insurance"

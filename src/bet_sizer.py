@@ -223,7 +223,7 @@ def predeal_moments(
                     dealer_up=u,
                     remaining_counts=deck_after,
                     can_double=True,
-                    cashout_allowed=engine.rules.cashout_allowed,
+                    can_cashout=engine.rules.can_cashout,
                     can_split=True,
                     split_level=0,
                     assume_split_independence=assume_split_independence,

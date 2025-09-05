@@ -115,7 +115,7 @@ class CardTransitionCalculator:
         self,
         hand_state: HandState,
         is_initial_hand: bool = True,
-        cashout_allowed: bool = True,
+        can_cashout: bool = True,
     ) -> Set[ActionType]:
         """Get all available actions for a given hand state"""
 
@@ -127,8 +127,8 @@ class CardTransitionCalculator:
         if is_initial_hand and hand_state.card_count == 2:
             actions.add(ActionType.DOUBLE)
 
-            if cashout_allowed:
-                actions.add(ActionType.SURRENDER_ANY_TIME)
+            if can_cashout:
+                actions.add(ActionType.CASHOUT)
 
             if hand_state.can_split:
                 actions.add(ActionType.SPLIT)

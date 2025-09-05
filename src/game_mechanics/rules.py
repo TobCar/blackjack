@@ -8,27 +8,17 @@ CASHOUT_EV = -0.6
 BLACKJACK_PAYOUT = 1.5
 
 
-@dataclass(frozen=True)
-class DealerBJOutcome:
-    end_hand: bool
-    player_bj_pushes: bool
-    lose_additional_bets: bool  # doubles/splits also lose when True
-
-
 class PeekPolicy(Protocol):
+    def __call__(self, upcard: str) -> bool: ...
+
+
+class PayoutPolicy(Protocol):
     def __call__(
-        self, upcard: str, insurance_offered: bool, insurance_taken: bool
-    ) -> bool: ...
-
-
-class SettlementPolicy(Protocol):
-    def __call__(
-        self, player_has_blackjack: bool, has_additional_bets: bool
-    ) -> DealerBJOutcome: ...
-
-
-class SurrenderPolicy(Protocol):
-    def __call__(self, n_cards: int) -> Optional[float]: ...
+        self,
+        player_total: int,
+        dealer_total: int,
+        bet_multiplier: float = 1.0,
+    ) -> float: ...
 
 
 class InsuranceOfferPolicy(Protocol):
@@ -39,7 +29,7 @@ class InsuranceOfferPolicy(Protocol):
 class BlackjackRuleset:
     # Identification
     name: str = "playnow-online-casino"
-    
+
     # Core structural rules
     s17: bool = True
     das: bool = True
@@ -47,13 +37,12 @@ class BlackjackRuleset:
     blackjack_payout: float = 1.5
     insurance_allowed: bool = True
     max_splits: int = 1  # 1 => up to 2 hands total
-    cashout_allowed: bool = False  # Only offered in online casinos
+    can_cashout: bool = False  # Only offered in online casinos
 
     # Functional policies (callables)
     offer_insurance: InsuranceOfferPolicy = None  # type: ignore[assignment]
     should_dealer_peek: PeekPolicy = None  # type: ignore[assignment]
-    settle_peeked_dealer_blackjack: SettlementPolicy = None  # type: ignore[assignment]
-    settle_drawn_dealer_blackjack: SettlementPolicy = None  # type: ignore[assignment]
+    calculate_non_player_blackjack_payout: PayoutPolicy = None  # type: ignore[assignment]
 
 
 # Default implementations for online-casino variant
@@ -61,26 +50,48 @@ def standard_insurance_offer_on_ace(upcard: str) -> bool:
     return upcard == "A"
 
 
-def hybrid_peek_only_when_insured(
-    upcard: str, insurance_offered: bool, insurance_taken: bool
-) -> bool:
-    return upcard == "A" and insurance_offered and insurance_taken
+def dealer_only_peeks_aces(upcard: str) -> bool:
+    """Dealer peeks for blackjack only when showing Ace."""
+    # insurance_offered and insurance_taken are not used in this policy
+    return upcard == "A"
 
 
-def settlement_peeked_dealer_bj(
-    player_has_blackjack: bool, has_additional_bets: bool
-) -> DealerBJOutcome:
-    return DealerBJOutcome(
-        end_hand=True, player_bj_pushes=True, lose_additional_bets=False
-    )
+def standard_payout_without_player_blackjack(
+    player_total: int,
+    dealer_total: int,
+    bet_multiplier: float = 1.0,
+) -> float:
+    """
+    Calculate payout for a blackjack hand.
 
+    Key rule: Dealer blackjack always pushes against player blackjack
+    (regardless of whether dealer peeked or drew to blackjack)
 
-def settlement_drawn_dealer_bj(
-    player_has_blackjack: bool, has_additional_bets: bool
-) -> DealerBJOutcome:
-    return DealerBJOutcome(
-        end_hand=True, player_bj_pushes=False, lose_additional_bets=True
-    )
+    Args:
+        player_total: Player's hand total
+        player_is_blackjack: True if player has natural blackjack
+        dealer_total: Dealer's hand total (or 22 for bust)
+        dealer_is_blackjack: True if dealer has natural blackjack
+        bet_multiplier: Multiplier for bet size (1.0=normal, 2.0=doubled)
+
+    Returns:
+        Payout as multiple of original bet (positive=win, negative=loss, 0=push)
+    """
+    # Player busted
+    if player_total > 21:
+        return -bet_multiplier
+
+    # Dealer busted, player did not
+    if dealer_total > 21:
+        return bet_multiplier
+
+    # Neither busted: compare totals
+    if player_total > dealer_total:
+        return bet_multiplier
+    elif player_total == dealer_total:
+        return 0.0
+    else:
+        return -bet_multiplier
 
 
 RULES = BlackjackRuleset(
@@ -89,10 +100,9 @@ RULES = BlackjackRuleset(
     must_stand_after_split_aces=True,  # no further hits after split aces
     blackjack_payout=BLACKJACK_PAYOUT,
     insurance_allowed=True,
-    cashout_allowed=True,
+    can_cashout=True,
     max_splits=1,
-    should_dealer_peek=hybrid_peek_only_when_insured,
-    settle_peeked_dealer_blackjack=settlement_peeked_dealer_bj,
-    settle_drawn_dealer_blackjack=settlement_drawn_dealer_bj,
+    should_dealer_peek=dealer_only_peeks_aces,
+    calculate_non_player_blackjack_payout=standard_payout_without_player_blackjack,
     offer_insurance=standard_insurance_offer_on_ace,
 )

@@ -130,9 +130,7 @@ class BlackjackEVEngine:
         Compute the *optimal* EV for the current situation.
         """
         self._load_deck(remaining_counts)
-        player_key = PlayerKey.from_hand(
-            hand, split_level, can_double, can_split
-        )
+        player_key = PlayerKey.from_hand(hand, split_level, can_double, can_split)
         key = (player_key, dealer_up, self.rules.name, self.deck_key)
 
         if key in self.ev_cache:
@@ -202,7 +200,6 @@ class BlackjackEVEngine:
         # Cashout rule for online casinos
         if self.rules.can_cashout:
             evs[ActionType.CASHOUT] = CASHOUT_EV
-
 
         # For actions that create additional bets, check if they should be restricted
         # due to dealer blackjack timing rules
@@ -350,7 +347,7 @@ class BlackjackEVEngine:
                 can_double=self.rules.das and not must_stand_after_aces,
                 can_split=(
                     False
-                    if self.rules.max_splits >= (pk.split_level + 1)
+                    if self.rules.max_splits <= (pk.split_level + 1)
                     or must_stand_after_aces
                     else h1.can_split
                 ),
@@ -364,7 +361,7 @@ class BlackjackEVEngine:
                 can_double=self.rules.das and not must_stand_after_aces,
                 can_split=(
                     False
-                    if self.rules.max_splits >= (pk.split_level + 1)
+                    if self.rules.max_splits <= (pk.split_level + 1)
                     or must_stand_after_aces
                     else h2.can_split
                 ),
@@ -377,7 +374,6 @@ class BlackjackEVEngine:
             ev += p * (ev1 + ev2)
 
         return ev
-
 
     def _ev_player_blackjack(self, dealer_up: str) -> float:
         """Handle player blackjack with proper peek and settlement rules."""
@@ -582,7 +578,6 @@ class BlackjackEVEngine:
             m2 = CASHOUT_EV * CASHOUT_EV
             cand[ActionType.CASHOUT] = (m1, m2)
 
-
         # For actions that create additional bets, apply timing multiplier
         additional_bet_multiplier = self._get_additional_bet_multiplier(
             hand, dealer_up, pk
@@ -648,10 +643,10 @@ class BlackjackEVEngine:
         # Calculate probability of dealer blackjack
         if dealer_up == "A":
             ten_idx = self._rank_index(TEN_BUCKET)
-            dealer_blackjack_prob = self.deck[ten_idx] / (self.N - 1)
+            dealer_blackjack_prob = self.deck[ten_idx] / self.N
         else:  # dealer_up == TEN_BUCKET
             ace_idx = self._rank_index("A")
-            dealer_blackjack_prob = self.deck[ace_idx] / (self.N - 1)
+            dealer_blackjack_prob = self.deck[ace_idx] / self.N
 
         # If dealer has blackjack: push (payoff = 0)
         # If dealer doesn't have blackjack: player wins blackjack payout
@@ -676,9 +671,7 @@ class BlackjackEVEngine:
                 continue
             p = cnt / total_cards
             self._draw(idx)
-            child_pk = PlayerKey.from_hand(
-                next_hand, pk.split_level, False, False
-            )
+            child_pk = PlayerKey.from_hand(next_hand, pk.split_level, False, False)
             key = (child_pk, dealer_up, self.rules.name, self.deck_key)
             if key in self.ev_cache:
                 cm1, cm2, _ = self.ev_cache[key]
@@ -760,7 +753,7 @@ class BlackjackEVEngine:
                 self.rules.das and not must_stand_after_aces,
                 (
                     False
-                    if self.rules.max_splits >= (pk.split_level + 1)
+                    if self.rules.max_splits <= (pk.split_level + 1)
                     or must_stand_after_aces
                     else h1.can_split
                 ),
@@ -775,7 +768,7 @@ class BlackjackEVEngine:
                 self.rules.das and not must_stand_after_aces,
                 (
                     False
-                    if self.rules.max_splits >= (pk.split_level + 1)
+                    if self.rules.max_splits <= (pk.split_level + 1)
                     or must_stand_after_aces
                     else h2.can_split
                 ),
@@ -800,4 +793,3 @@ class BlackjackEVEngine:
             m2_total += p * m2_pair
 
         return m1_total, m2_total
-

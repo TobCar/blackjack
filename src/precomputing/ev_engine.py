@@ -203,13 +203,6 @@ class BlackjackEVEngine:
         if self.rules.can_cashout:
             evs[ActionType.CASHOUT] = CASHOUT_EV
 
-        # Insurance (consider only if rule allows offering insurance on this upcard)
-        if (
-            self.rules.insurance_allowed
-            and self.rules.offer_insurance(dealer_up)
-            and pk.num_cards == 2
-        ):
-            evs[ActionType.INSURANCE] = self._ev_insurance(hand, dealer_up)
 
         # For actions that create additional bets, check if they should be restricted
         # due to dealer blackjack timing rules
@@ -385,32 +378,6 @@ class BlackjackEVEngine:
 
         return ev
 
-    def _ev_insurance(self, hand: HandState, dealer_up: str) -> float:
-        # Only meaningful when dealer_up == 'A'
-        if dealer_up != "A":
-            return self._ev_stand(hand, dealer_up)
-
-        # Even money simplification: if player has blackjack and takes insurance,
-        # it's guaranteed 1:1 payout regardless of dealer outcome
-        if hand.is_blackjack:
-            return 1.0  # Even money guarantee
-
-        ten_idx = self._rank_index(TEN_BUCKET)
-        if self.N == 0:
-            return -0.5  # lose the side bet, nothing else changes
-
-        p_bj = self.deck[ten_idx] / self.N
-        p_no = 1.0 - p_bj
-
-        # If dealer has blackjack:
-        # - Insurance pays 2:1 on 0.5 → +1 net on the side
-        # - Main hand: loses -1 (player doesn't have BJ in this branch)
-        v_bj = 0.0  # insurance +1 and main -1 → net 0
-
-        # If dealer does NOT have blackjack:
-        # - Lose the 0.5 side bet, continue normal game
-        v_no = -0.5 + self._ev_stand(hand, dealer_up)
-        return p_bj * v_bj + p_no * v_no
 
     def _ev_player_blackjack(self, dealer_up: str) -> float:
         """Handle player blackjack with proper peek and settlement rules."""
@@ -446,8 +413,6 @@ class BlackjackEVEngine:
             return 1.0
 
         # Check if dealer should peek
-        insurance_offered = self.rules.offer_insurance(dealer_up)
-        insurance_taken = False  # For EV calculation, assume not taken
         should_peek = self.rules.should_dealer_peek(dealer_up)
 
         if not should_peek:
@@ -617,14 +582,6 @@ class BlackjackEVEngine:
             m2 = CASHOUT_EV * CASHOUT_EV
             cand[ActionType.CASHOUT] = (m1, m2)
 
-        # Insurance
-        if (
-            self.rules.insurance_allowed
-            and self.rules.offer_insurance(dealer_up)
-            and pk.num_cards == 2
-        ):
-            m1, m2 = self._insurance_moments(hand, dealer_up)
-            cand[ActionType.INSURANCE] = (m1, m2)
 
         # For actions that create additional bets, apply timing multiplier
         additional_bet_multiplier = self._get_additional_bet_multiplier(
@@ -844,24 +801,3 @@ class BlackjackEVEngine:
 
         return m1_total, m2_total
 
-    def _insurance_moments(
-        self, hand: HandState, dealer_up: str
-    ) -> Tuple[float, float]:
-        if dealer_up != "A":
-            return self._stand_moments(hand, dealer_up)
-
-        # Even money simplification: if player has blackjack and takes insurance,
-        # it's guaranteed 1:1 payout regardless of dealer outcome
-        if hand.is_blackjack:
-            return 1.0, 1.0  # Guaranteed payoff of 1.0
-
-        ten_idx = self._rank_index(TEN_BUCKET)
-        if self.N == 0:
-            return -0.5, 0.25
-        p_bj = self.deck[ten_idx] / self.N
-        p_no = 1.0 - p_bj
-        v_bj = 0.0  # insurance +1 and main -1 → net 0 (player doesn't have BJ in this branch)
-        v_no = -0.5 + self._stand_moments(hand, dealer_up)[0]
-        m1 = p_bj * v_bj + p_no * v_no
-        m2 = p_bj * (v_bj * v_bj) + p_no * (v_no * v_no)
-        return m1, m2

@@ -21,10 +21,6 @@ class PayoutPolicy(Protocol):
     ) -> float: ...
 
 
-class InsuranceOfferPolicy(Protocol):
-    def __call__(self, upcard: str) -> bool: ...
-
-
 @dataclass(frozen=True)
 class BlackjackRuleset:
     # Identification
@@ -35,24 +31,17 @@ class BlackjackRuleset:
     das: bool = True
     must_stand_after_split_aces: bool = True
     blackjack_payout: float = 1.5
-    insurance_allowed: bool = True
     max_splits: int = 1  # 1 => up to 2 hands total
     can_cashout: bool = False  # Only offered in online casinos
 
     # Functional policies (callables)
-    offer_insurance: InsuranceOfferPolicy = None  # type: ignore[assignment]
     should_dealer_peek: PeekPolicy = None  # type: ignore[assignment]
     calculate_non_player_blackjack_payout: PayoutPolicy = None  # type: ignore[assignment]
 
 
 # Default implementations for online-casino variant
-def standard_insurance_offer_on_ace(upcard: str) -> bool:
-    return upcard == "A"
-
-
 def dealer_only_peeks_aces(upcard: str) -> bool:
     """Dealer peeks for blackjack only when showing Ace."""
-    # insurance_offered and insurance_taken are not used in this policy
     return upcard == "A"
 
 
@@ -99,10 +88,8 @@ RULES = BlackjackRuleset(
     das=True,
     must_stand_after_split_aces=True,  # no further hits after split aces
     blackjack_payout=BLACKJACK_PAYOUT,
-    insurance_allowed=True,
     can_cashout=True,
     max_splits=1,
     should_dealer_peek=dealer_only_peeks_aces,
     calculate_non_player_blackjack_payout=standard_payout_without_player_blackjack,
-    offer_insurance=standard_insurance_offer_on_ace,
 )

@@ -7,4 +7,3 @@ class ActionType(Enum):
     DOUBLE = "double"
     SPLIT = "split"
     CASHOUT = "cashout"
-    INSURANCE = "insurance"

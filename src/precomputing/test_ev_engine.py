@@ -89,7 +89,6 @@ def run_scenarios(scenarios: List[Scenario]) -> List[Dict[str, Any]]:
             rules.must_stand_after_split_aces,
             rules.can_cashout,
             rules.blackjack_payout,
-            rules.insurance_allowed,
         )
         engine = engine_cache.get(rules_key)
         if engine is None:
@@ -165,22 +164,11 @@ if __name__ == "__main__":
             can_cashout=True,
             rules=RULES,
         ),
-        # Blackjack vs dealer Ace (insurance allowed) — tests push on dealer BJ
+        # Blackjack vs dealer Ace — tests push on dealer BJ
         Scenario(
             player_cards=["A", "10"],
             dealer_up="A",
             num_decks=6,
-            rules=RULES,
-        ),
-        # Even money test: player blackjack vs dealer Ace with insurance
-        # Should show insurance EV = 1.0 (even money guarantee)
-        Scenario(
-            player_cards=["A", "10"],
-            dealer_up="A",
-            num_decks=1,
-            can_double=False,  # Not applicable for blackjack
-            can_split=False,  # Not applicable for blackjack
-            can_cashout=False,  # Focus on insurance vs stand
             rules=RULES,
         ),
         # Double test: hard 11 vs 6
